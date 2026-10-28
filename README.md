@@ -1,8 +1,8 @@
 # ie-mode-mcp
 
-让 AI 助手通过本地 MCP 服务操作 Microsoft Edge 的 IE 模式网页。
+**简体中文** | [English](README.en.md)
 
-A local MCP server for AI assistants to automate Microsoft Edge in IE mode using Selenium and IEDriver.
+让 AI 助手通过本地 MCP 服务操作 Microsoft Edge 的 IE 模式网页。
 
 实验性 Windows 项目，适用于仍依赖 IE 模式的登录、查询、表单和文件上传流程。启动独立受控窗口后，可手动登录并继续操作；不接管已有标签页。
 
