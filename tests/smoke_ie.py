@@ -15,6 +15,32 @@ def ref(snapshot, element_id):
     return next(c["ref"] for c in snapshot["controls"] if c["id"] == element_id)
 
 
+def check_interactions(browser):
+    print('STEP: testing new interactions', flush=True)
+    assert browser.status()['state'] == 'ready'
+    page = browser.snapshot()
+    for action, target, expected in [('double', 'doubleTarget', 'Double received'),
+                                     ('right', 'rightTarget', 'Right received')]:
+        browser.act(action, ref(page, target))
+        page = browser.wait_text(expected)
+    browser.hover(ref(page, 'hoverTarget'))
+    page = browser.wait_text('Hover received')
+    browser.press_key(ref(page, 'keyTarget'), 'ENTER')
+    page = browser.wait_text('Enter received')
+    browser.act('click', ref(page, 'asyncTarget'))
+    ready = browser.wait_ready(seconds=10, stable_seconds=1)
+    assert ready['ready'] and ready['skipped_frames'] == 0
+    page = browser.snapshot()
+    assert 'Async ready' in page['text']
+    assert 'Loading' not in browser.wait_text('Loading', gone=True)['text']
+    assert browser.scroll('bottom')['position']['y'] > 0
+    assert browser.scroll('top')['position']['y'] == 0
+    page = browser.snapshot()
+    assert browser.scroll('into_view', ref=ref(page, 'bottomTarget'))['position']['y'] > 0
+    browser.scroll('top')
+    print('PASS: double/right click, hover, key, AJAX readiness and scrolling', flush=True)
+
+
 def main():
     faulthandler.dump_traceback_later(60, repeat=True)
     handler = partial(SimpleHTTPRequestHandler, directory=str(Path(__file__).parent / "fixtures"))
@@ -77,6 +103,15 @@ def main():
         assert 'Frame content ready' in snapshot['text']
         assert 'ie_mode_mcp_fixture=opener' in browser.driver.execute_script('return document.cookie')
         browser.close_window()
+        page = browser.navigate(f"http://127.0.0.1:{server.server_port}/interactions.html")
+        assert page['document_mode'] == 11
+        resized = browser.resize(1100, 850)
+        assert resized['window']['width'] > 0
+        assert browser.wait_ready()['documents'] == 2
+        check_interactions(browser)
+        browser.navigate(f"http://127.0.0.1:{server.server_port}/child.html")
+        assert 'Interaction fixture' in browser.history('back')['text']
+        assert 'Frame content ready' in browser.history('forward')['text']
         snapshot = browser.navigate(f"http://127.0.0.1:{server.server_port}/legacy.html")
         assert snapshot['document_mode'] == 7
         try:
@@ -106,6 +141,7 @@ def main():
         assert not {'hiddenSuggestion', 'plainSuggestion'} & ids
         browser.act('click', ref(snapshot, 'legacySuggestion'), click_mode='dom')
         assert 'Suggestion selected' in browser.wait_text('Suggestion selected')['text']
+        check_interactions(browser)
         snapshot = browser.open_page(f"http://127.0.0.1:{server.server_port}/child.html")
         assert 'Frame content ready' in snapshot['text']
         assert 'ie_mode_mcp_fixture=opener' in browser.driver.execute_script('return document.cookie')

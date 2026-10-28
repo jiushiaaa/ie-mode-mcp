@@ -21,7 +21,7 @@ MCP 接口仅使用 stdio，不提供 HTTP/SSE 服务。IEDriver 自身使用本
 - 在 IE11 文档模式中选择本地文件，交由网站自己的上传流程处理。
 - 为部分旧页面提供显式 DOM 操作及自定义行属性兼容处理。
 
-目前提供 **21 个 MCP 工具**。支持情况和真实浏览器测试范围见 [VALIDATION.md](VALIDATION.md)。
+目前提供 **28 个 MCP 工具**。支持情况和真实浏览器测试范围见 [VALIDATION.md](VALIDATION.md)。
 
 ## 安装
 
@@ -88,13 +88,27 @@ codex mcp get ie-mode --json
 
 | 用途 | 工具 |
 | --- | --- |
-| 环境与会话 | `environment_check`、`browser_start`、`browser_close` |
-| 导航与窗口 | `browser_navigate`、`browser_open_page`、`browser_windows`、`browser_switch_window`、`browser_close_window` |
-| 读取与等待 | `browser_snapshot`、`browser_screenshot`、`browser_read_table`、`browser_inspect_element`、`browser_wait_text` |
-| 表单操作 | `browser_click`、`browser_fill`、`browser_fill_many`、`browser_select`、`browser_choose_file` |
+| 环境与会话 | `environment_check`、`browser_start`、`browser_status`、`browser_close` |
+| 导航与窗口 | `browser_navigate`、`browser_open_page`、`browser_windows`、`browser_switch_window`、`browser_close_window`、`browser_history`、`browser_resize` |
+| 读取与等待 | `browser_snapshot`、`browser_screenshot`、`browser_read_table`、`browser_inspect_element`、`browser_wait_text`、`browser_wait_ready` |
+| 表单与交互 | `browser_click`、`browser_fill`、`browser_fill_many`、`browser_select`、`browser_choose_file`、`browser_press_key`、`browser_hover`、`browser_scroll` |
 | 框架与兼容 | `browser_frame`、`browser_alert`、`browser_prepare_legacy_row` |
 
 旧网站可能用没有替代文字的图片作为菜单。可调用 `browser_screenshot` 查看画面，再结合快照中各控件的 `bounds` 识别对应元素编号。截图可能包含业务信息。
+
+### 页面等待、键鼠和会话检查
+
+- `browser_wait_ready(seconds=10, stable_seconds=1, include_frames=true)` 检查当前文档及可访问子框架的加载状态，并等待 DOM 标记持续稳定。返回 `ready`、`timed_out`、已检查文档数及无法访问的框架数。不会切换当前框架，也不会接受弹窗。它不保证业务已完成或未来不再出现 AJAX 请求；必要时仍需等待指定结果文字。
+- `browser_wait_text(text, gone=true)` 等待文字从当前快照中消失。判断受快照范围及正文长度限制，不代表整个网站都不存在该文字。
+- `browser_click(ref, action="double")` 双击；`action="right"` 右键。这两种操作仅支持原生模式，不会失败后自动重试。现有普通点击调用保持不变。
+- `browser_press_key(ref, key="ENTER")` 对指定控件发送按键；也支持 `TAB`、`ESCAPE`、方向键、删除键、翻页键等，或单个可打印字符。`modifiers=["CONTROL"]` 可与 `key="a"` 组合。控件必须可见、启用，文件选择框不接受此工具；按键可能提交表单，操作后需核验。
+- `browser_hover(ref)` 移动原生指针以展开悬停菜单，不点击。随后读取新快照以获得菜单项引用。
+- `browser_scroll(direction="down", pixels=600)` 滚动当前文档；另支持 `up`、`left`、`right`、`top`、`bottom`。用 `direction="into_view", ref=...` 将指定控件滚入视野。滚动事件可能加载新内容，之后需更新快照。
+- `browser_history(direction="back")` / `direction="forward"` 单次后退或前进；超时保留会话，不重试。历史导航可能触发表单重提交提示。
+- `browser_resize(width=1100, height=850)` 调整窗口并返回实际尺寸，不改变缩放比例。
+- `browser_status()` 区分未启动、可访问、当前窗口已关闭、存在提示框和连接不可达；不会自动重启、切换框架或重复业务动作。`unreachable` 不代表浏览器进程已经退出。
+
+鼠标、按键、滚动、历史导航、尺寸调整及等待操作会使旧元素引用失效，按键、鼠标及窗口操作可能占用桌面焦点。正常会话状态查询保留引用。本项目保留 Windows 本地执行方式，不提供 macOS 原生 IE 或远程 Windows 执行端。
 
 ### 复杂表单与旧式弹窗
 
@@ -157,7 +171,8 @@ IE 驱动对缩放、安全区域及 Windows 配置有要求。本项目不自�
 ```text
 src/ie_mode_mcp/
   browser.py          浏览器操作、快照与兼容处理
-  server.py           21 个串行 MCP 工具及 stdio 入口
+  server.py           28 个串行 MCP 工具及 stdio 入口
+  page_scripts.py     兼容旧 IE 的只读页面就绪探测
   probe.py            交互诊断命令
   windows_session.py  Windows 桌面状态检查
 tests/
@@ -169,7 +184,7 @@ tests/
 
 欢迎通过 [Issues](https://github.com/jiushiaaa/ie-mode-mcp/issues) 提交可复现问题，或提交 Pull Request。请附 Windows、Edge、IEDriver、Python 版本及页面 `document_mode`；优先提供脱敏后的最小 HTML 示例。修改浏览器行为时请补充针对问题的测试，并在可用的 Windows 桌面上运行浏览器回归。
 
-`.local/` 用于本地调试记录，已被 Git 忽略。不要提交账号密码、Cookie、真实网页截图、业务单据或个人资料；浏览器驱动、虚拟环境和构建产物也不纳入源码仓库。
+页面等待与扩展交互能力参考了 [thomfilg/ie-mcp](https://github.com/thomfilg/ie-mcp) 的功能设计，并按本项目的临时元素引用、结果核验和禁止自动重试规则独立实现。
 
 ## 许可证
 

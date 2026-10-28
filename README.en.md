@@ -21,7 +21,7 @@ The MCP interface uses stdio only and does not offer an HTTP/SSE server. IEDrive
 - Select local files in IE11 document mode for the website's own upload flow.
 - Use explicit DOM actions and custom row-attribute compatibility support for certain legacy pages.
 
-Currently provides **21 MCP tools**. See [VALIDATION.md](VALIDATION.md) for tested environments and real browser coverage.
+Currently provides **28 MCP tools**. See [VALIDATION.md](VALIDATION.md) for tested environments and real browser coverage.
 
 ## Installation
 
@@ -88,13 +88,27 @@ Example instruction for an MCP-enabled assistant:
 
 | Purpose | Tools |
 | --- | --- |
-| Environment and session | `environment_check`, `browser_start`, `browser_close` |
-| Navigation and windows | `browser_navigate`, `browser_open_page`, `browser_windows`, `browser_switch_window`, `browser_close_window` |
-| Reading and waiting | `browser_snapshot`, `browser_screenshot`, `browser_read_table`, `browser_inspect_element`, `browser_wait_text` |
-| Form actions | `browser_click`, `browser_fill`, `browser_fill_many`, `browser_select`, `browser_choose_file` |
+| Environment and session | `environment_check`, `browser_start`, `browser_status`, `browser_close` |
+| Navigation and windows | `browser_navigate`, `browser_open_page`, `browser_windows`, `browser_switch_window`, `browser_close_window`, `browser_history`, `browser_resize` |
+| Reading and waiting | `browser_snapshot`, `browser_screenshot`, `browser_read_table`, `browser_inspect_element`, `browser_wait_text`, `browser_wait_ready` |
+| Forms and interaction | `browser_click`, `browser_fill`, `browser_fill_many`, `browser_select`, `browser_choose_file`, `browser_press_key`, `browser_hover`, `browser_scroll` |
 | Frames and compatibility | `browser_frame`, `browser_alert`, `browser_prepare_legacy_row` |
 
 Legacy websites may use menu images without alternative text. Use `browser_screenshot` and the controls' `bounds` in the snapshot to identify the corresponding element references. Screenshots may contain business information.
+
+### Page readiness, input, and session checks
+
+- `browser_wait_ready(seconds=10, stable_seconds=1, include_frames=true)` checks loading in the current document and accessible descendant frames, then waits for stable DOM markup. It returns `ready`, `timed_out`, document counts, and inaccessible frame counts. It does not switch frames or accept dialogs. This does not guarantee business completion or the absence of future AJAX requests; wait for specific result text when needed.
+- `browser_wait_text(text, gone=true)` waits for text to disappear from the current snapshot. Its scope and text-length limits apply; absence here is not proof that the text is absent from the whole website.
+- `browser_click(ref, action="double")` double-clicks; `action="right"` right-clicks. Both require native mode and never retry automatically. Existing ordinary click calls remain compatible.
+- `browser_press_key(ref, key="ENTER")` sends a key to the specified control. It also supports `TAB`, `ESCAPE`, arrows, deletion and page-navigation keys, or a single printable character. Combine `modifiers=["CONTROL"]` with `key="a"` for a chord. Targets must be visible and enabled; file inputs are excluded. Keys may submit forms, so verify the outcome.
+- `browser_hover(ref)` moves the native pointer to reveal a hover menu without clicking. Take a fresh snapshot for the revealed menu references.
+- `browser_scroll(direction="down", pixels=600)` scrolls the current document; `up`, `left`, `right`, `top`, and `bottom` are also supported. Use `direction="into_view", ref=...` to bring a control into view. Scroll events may load content; refresh the snapshot afterward.
+- `browser_history(direction="back")` / `direction="forward"` navigates once. A timeout retains the session without retrying. History navigation may trigger form-resubmission prompts.
+- `browser_resize(width=1100, height=850)` resizes the window and returns its actual dimensions, without changing zoom.
+- `browser_status()` distinguishes not started, reachable, closed current window, pending dialog, and unreachable connection states. It never restarts, changes frames, or repeats business actions. `unreachable` does not prove that the browser process exited.
+
+Pointer, keyboard, scrolling, history, resize, and wait operations invalidate old element references. Keyboard, pointer, and window operations may take desktop focus. Healthy session status queries preserve references. This project retains local Windows execution; it does not provide native macOS IE or a remote Windows worker.
 
 ### Complex forms and legacy dialogs
 
@@ -157,7 +171,8 @@ IEDriver has requirements for browser zoom, security zones, and Windows configur
 ```text
 src/ie_mode_mcp/
   browser.py          Browser actions, snapshots, and compatibility handling
-  server.py           21 serialized MCP tools and the stdio entry point
+  server.py           28 serialized MCP tools and the stdio entry point
+  page_scripts.py     Read-only readiness probing compatible with legacy IE
   probe.py            Interactive diagnostic command
   windows_session.py  Windows desktop status checks
 tests/
@@ -169,7 +184,7 @@ tests/
 
 Reproducible [issues](https://github.com/jiushiaaa/ie-mode-mcp/issues) and pull requests are welcome. Include Windows, Edge, IEDriver, and Python versions, plus the page's `document_mode`. Prefer a minimal HTML example with sensitive information removed. When changing browser behavior, add a regression test and run the browser fixture on an available Windows desktop.
 
-`.local/` is for local debugging records and is ignored by Git. Do not commit passwords, cookies, real webpage screenshots, business documents, or personal information. Browser drivers, virtual environments, and build artifacts are also excluded from the source repository.
+Page readiness and extended interactions were inspired by the feature design of [thomfilg/ie-mcp](https://github.com/thomfilg/ie-mcp), and independently implemented using this project's temporary element references, result verification, and no-automatic-retry rules.
 
 ## License
 

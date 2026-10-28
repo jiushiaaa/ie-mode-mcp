@@ -4,16 +4,24 @@ import re
 import shutil
 from pathlib import Path
 from threading import RLock
+from time import monotonic
 from urllib.parse import urlsplit
 from uuid import uuid4
 
 from selenium import webdriver
-from selenium.common.exceptions import NoSuchWindowException, TimeoutException
+from selenium.common.exceptions import (
+    JavascriptException, NoSuchWindowException, StaleElementReferenceException,
+    TimeoutException, UnexpectedAlertPresentException, WebDriverException,
+)
+from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.ie.service import Service
 from selenium.webdriver.remote.file_detector import UselessFileDetector
 from selenium.webdriver.support.ui import Select, WebDriverWait
+from urllib3.exceptions import HTTPError
 
+from .page_scripts import READY_PROBE
 from .windows_session import desktop_status
 
 
@@ -243,13 +251,19 @@ class Browser:
         return {"copied": copied, "note": "Copied existing row attributes to missing legacy properties in this document only. No click or submit performed. Take a fresh snapshot before acting."}
 
     def act(self, action, ref, value="", click_mode="native", fill_mode="native", select_mode="native"):
+        if action not in ('click', 'double', 'right', 'fill', 'select'):
+            raise ValueError("Unknown action.")
         if click_mode not in ("native", "dom"):
             raise ValueError("Click mode must be native or dom.")
+        if action in ('double', 'right') and click_mode != 'native':
+            raise ValueError("Double and right clicks require native mode.")
         if fill_mode not in ("native", "dom"):
             raise ValueError("Fill mode must be native or dom.")
         if select_mode not in ("native", "dom"):
             raise ValueError("Select mode must be native or dom.")
         element = self.resolve(ref)
+        if action in ('double', 'right'):
+            self.validate_interactive(element)
         if action == "fill":
             self.validate_text_field(element)
             if fill_mode == "dom" and not self.is_visible(element):
@@ -262,6 +276,12 @@ class Browser:
                 self.require_driver().execute_script("arguments[0].click();", element)
             else:
                 element.click()
+        elif action in ('double', 'right'):
+            chain = ActionChains(self.require_driver())
+            if action == 'double':
+                chain.double_click(element).perform()
+            else:
+                chain.context_click(element).perform()
         elif action == "fill":
             self.fill_text(element, value, fill_mode)
         elif action == "select":
@@ -295,6 +315,97 @@ class Browser:
         else:
             raise ValueError("Unknown action.")
         return {"performed": action, "note": "Read a fresh snapshot to verify the outcome; this does not confirm business success."}
+
+    def validate_interactive(self, element):
+        if not self.is_visible(element) or not element.is_enabled():
+            raise ValueError("Interaction requires a visible, enabled element.")
+
+    def press_key(self, ref, key, modifiers=None):
+        names = {name: getattr(Keys, name) for name in (
+            'ENTER', 'TAB', 'ESCAPE', 'BACKSPACE', 'DELETE', 'SPACE',
+            'ARROW_UP', 'ARROW_DOWN', 'ARROW_LEFT', 'ARROW_RIGHT',
+            'HOME', 'END', 'PAGE_UP', 'PAGE_DOWN')}
+        modifiers = modifiers or []
+        if len(set(modifiers)) != len(modifiers) or any(m not in ('CONTROL', 'ALT', 'SHIFT') for m in modifiers):
+            raise ValueError("Modifiers must be unique CONTROL, ALT or SHIFT names.")
+        if key not in names and (len(key) != 1 or not key.isprintable() or '\ue000' <= key <= '\uf8ff'):
+            raise ValueError("Use a supported key name or one printable character.")
+        element = self.resolve(ref)
+        self.validate_interactive(element)
+        if (element.get_dom_attribute('type') or '').lower() == 'file':
+            raise ValueError("Use browser_choose_file for a file input.")
+        self.invalidate()
+        # Send the chord as one operation, ending with WebDriver's modifier reset.
+        element.send_keys(*(getattr(Keys, m) for m in modifiers), names.get(key, key), Keys.NULL)
+        return {"performed": "press_key", "note": "Key events may submit a form. Inspect the page; no automatic retry was made."}
+
+    def hover(self, ref):
+        element = self.resolve(ref)
+        self.validate_interactive(element)
+        self.invalidate()
+        ActionChains(self.require_driver()).move_to_element(element).perform()
+        return {"performed": "hover", "note": "Take a fresh snapshot to discover any newly visible menu."}
+
+    def scroll(self, direction='down', pixels=600, ref=None):
+        if direction not in ('up', 'down', 'left', 'right', 'top', 'bottom', 'into_view'):
+            raise ValueError("Direction must be up, down, left, right, top, bottom or into_view.")
+        if not 1 <= pixels <= 10000 or (direction == 'into_view') != bool(ref):
+            raise ValueError("Use 1-10000 pixels; only into_view requires an element reference.")
+        element = self.resolve(ref) if ref else None
+        if element is not None and not self.is_visible(element):
+            raise ValueError("Scroll target must be visible, not hidden by CSS.")
+        self.invalidate()
+        position = self.require_driver().execute_script("""
+            var direction=arguments[0], pixels=arguments[1], el=arguments[2];
+            var root=document.documentElement, body=document.body;
+            if(direction==='into_view') el.scrollIntoView();
+            else if(direction==='top') window.scrollTo(0,0);
+            else if(direction==='bottom') window.scrollTo(0,Math.max(root.scrollHeight,body ? body.scrollHeight : 0));
+            else window.scrollBy(direction==='left' ? -pixels : direction==='right' ? pixels : 0,
+                                 direction==='up' ? -pixels : direction==='down' ? pixels : 0);
+            return {x:window.pageXOffset || root.scrollLeft || (body && body.scrollLeft) || 0,
+                    y:window.pageYOffset || root.scrollTop || (body && body.scrollTop) || 0};
+        """, direction, pixels, element)
+        return {"performed": "scroll", "position": position,
+                "note": "Scroll events may load content. Take a fresh snapshot."}
+
+    def history(self, direction):
+        if direction not in ('back', 'forward'):
+            raise ValueError("Direction must be back or forward.")
+        driver = self.require_driver()
+        self.invalidate()
+        try:
+            getattr(driver, direction)()
+        except TimeoutException:
+            return {"navigation_timed_out": True, "note": "Session retained. Inspect before repeating history navigation."}
+        return self.snapshot()
+
+    def resize(self, width, height):
+        if not 320 <= width <= 3840 or not 200 <= height <= 2160:
+            raise ValueError("Window size must be 320-3840 by 200-2160 pixels.")
+        driver = self.require_driver()
+        self.invalidate()
+        driver.set_window_size(width, height)
+        return {"window": driver.get_window_rect(), "note": "Actual window size returned. Take a fresh snapshot."}
+
+    def status(self):
+        if self.driver is None:
+            return {"session_exists": False, "state": "not_started"}
+        result = {"session_exists": True}
+        try:
+            result['handles'] = self.driver.window_handles
+            result.update(current=self.driver.current_window_handle,
+                          url=self.driver.current_url, title=self.driver.title, state='ready')
+        except NoSuchWindowException:
+            self.invalidate()
+            result.update(current=None, state='window_closed', note='Select a remaining window; do not repeat the last action.')
+        except UnexpectedAlertPresentException:
+            result.update(state='dialog_open', note='Use browser_alert to inspect the pending dialog.')
+        except (WebDriverException, HTTPError, OSError) as error:
+            self.invalidate()
+            result.update(state='unreachable', error_type=type(error).__name__,
+                          note='No restart or retry performed. Inspect the session before closing or starting again.')
+        return result
 
     def table(self, ref):
         element = self.resolve(ref)
@@ -485,15 +596,53 @@ class Browser:
         driver.switch_to.window(handle)
         return self.snapshot()
 
-    def wait_text(self, text, seconds=10):
+    def wait_text(self, text, seconds=10, gone=False):
         if not text or not 1 <= seconds <= 30:
             raise ValueError("Provide nonempty text and a timeout between 1 and 30 seconds.")
         driver = self.require_driver()
         def matching_snapshot(_):
             page = self.snapshot()
-            return page if text in page["text"] else False
+            return page if (text in page["text"]) != gone else False
 
         return WebDriverWait(driver, seconds).until(matching_snapshot)
+
+    def wait_ready(self, seconds=10, stable_seconds=1.0, include_frames=True):
+        if not 1 <= seconds <= 30 or not 0.25 <= stable_seconds <= seconds:
+            raise ValueError("Use a timeout of 1-30 seconds and stability of 0.25 seconds up to that timeout.")
+        driver = self.require_driver()
+        self.invalidate()
+        signature, stable_since = None, None
+        last = {}
+        def settled(_):
+            nonlocal signature, stable_since, last
+            try:
+                probe = driver.execute_script(READY_PROBE, include_frames)
+            except (JavascriptException, StaleElementReferenceException) as error:
+                signature, stable_since = None, None
+                last = {'error_type': type(error).__name__}
+                return False
+            if not isinstance(probe, dict) or not probe.get('document'):
+                signature, stable_since, last = None, None, {}
+                return False
+            now = monotonic()
+            current = (probe['document'], probe['signature'])
+            last = {k: probe[k] for k in ('complete', 'documents', 'skipped_frames', 'elements')}
+            if not probe['complete']:
+                signature, stable_since = None, None
+                return False
+            if current != signature:
+                signature, stable_since = current, now
+            return now - stable_since >= stable_seconds
+
+        started = monotonic()
+        try:
+            WebDriverWait(driver, seconds, poll_frequency=0.25).until(settled)
+            ready = True
+        except TimeoutException:
+            ready = False
+        return {**last, 'ready': ready, 'timed_out': not ready,
+                'elapsed_seconds': round(monotonic() - started, 2),
+                'note': 'Checks DOM stability, not business completion or future AJAX. Inaccessible frames are skipped; inspect them separately. Take a fresh snapshot.'}
 
     def alert(self, action="read"):
         if action not in ("read", "accept", "dismiss"):

@@ -1,0 +1,14 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>Interaction fixture</title></head>
+<body>
+<h1>Interaction fixture</h1>
+<button id="doubleTarget" ondblclick="document.getElementById('eventResult').innerText='Double received';">Double click</button>
+<button id="rightTarget" oncontextmenu="document.getElementById('eventResult').innerText='Right received';return false;">Right click</button>
+<button id="hoverTarget" onmouseover="document.getElementById('eventResult').innerText='Hover received';">Hover</button>
+<label for="keyTarget">Keyboard</label><input id="keyTarget" type="text" onkeydown="if((window.event || event).keyCode===13){document.getElementById('eventResult').innerText='Enter received';return false;}">
+<p id="eventResult">Waiting for interaction</p>
+<button id="asyncTarget" onclick="document.getElementById('asyncResult').innerText='Loading';setTimeout(function(){document.getElementById('asyncResult').innerText='Async ready';},400);">Load data</button>
+<p id="asyncResult">Not loaded</p>
+<iframe id="readyChild" title="Ready child" src="child.html"></iframe>
+<button id="bottomTarget" style="display:block;margin-top:1600px">Bottom target</button>
+</body></html>

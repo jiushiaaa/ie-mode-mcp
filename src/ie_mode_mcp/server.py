@@ -61,9 +61,11 @@ def browser_screenshot() -> Image:
 
 
 @tool
-def browser_click(ref: str, mode: str = "native") -> dict:
-    """Click a fresh reference. mode=dom explicitly uses the visible element's click() for native coordinate/zoom failures. Never automatically retries. Either mode may submit data; verify intent and outcome."""
-    return browser.act("click", ref, click_mode=mode)
+def browser_click(ref: str, mode: str = "native", action: str = "click") -> dict:
+    """Click a fresh reference; action=click|double|right. Double/right require native mode. mode=dom uses the visible element's click() for diagnosed native failures. No automatic retry; verify intent and business outcome."""
+    if action not in ('click', 'double', 'right'):
+        raise ValueError("Action must be click, double or right.")
+    return browser.act(action, ref, click_mode=mode)
 
 
 @tool
@@ -144,9 +146,51 @@ def browser_switch_window(handle: str) -> dict:
 
 
 @tool
-def browser_wait_text(text: str, seconds: int = 10) -> dict:
-    """Wait up to 30 seconds for visible text in the current frame."""
-    return browser.wait_text(text, seconds)
+def browser_wait_text(text: str, seconds: int = 10, gone: bool = False) -> dict:
+    """Wait up to 30 seconds for text to appear (or disappear with gone=true) in the bounded visible snapshot of the current frame. Absence does not prove absence outside snapshot limits."""
+    return browser.wait_text(text, seconds, gone)
+
+
+@tool
+def browser_wait_ready(seconds: int = 10, stable_seconds: float = 1.0, include_frames: bool = True) -> dict:
+    """Wait for readyState=complete and stable DOM markup in the current frame and accessible descendant frames. Report skipped frames and timeouts. Does not guarantee business completion or future AJAX; read a fresh snapshot afterward."""
+    return browser.wait_ready(seconds, stable_seconds, include_frames)
+
+
+@tool
+def browser_press_key(ref: str, key: str, modifiers: list[str] | None = None) -> dict:
+    """Send a key to a fresh visible enabled reference, excluding file inputs. key: ENTER, TAB, ESCAPE, BACKSPACE, DELETE, SPACE, ARROW_UP/DOWN/LEFT/RIGHT, HOME, END, PAGE_UP/DOWN, or one printable character. Optional unique CONTROL/ALT/SHIFT modifiers. May submit forms; no retry."""
+    return browser.press_key(ref, key, modifiers)
+
+
+@tool
+def browser_hover(ref: str) -> dict:
+    """Move the native pointer over a fresh visible enabled reference, without clicking. Read a new snapshot for revealed menus. May take desktop focus."""
+    return browser.hover(ref)
+
+
+@tool
+def browser_scroll(direction: str = "down", pixels: int = 600, ref: str | None = None) -> dict:
+    """Scroll the current document up/down/left/right by 1-10000 pixels, or to top/bottom. direction=into_view requires a fresh visible reference; other directions reject ref. Scroll handlers may load data; take a fresh snapshot."""
+    return browser.scroll(direction, pixels, ref)
+
+
+@tool
+def browser_history(direction: str) -> dict:
+    """Navigate back or forward once and read a new snapshot. History can trigger page loads or resubmission prompts. Never automatically retries."""
+    return browser.history(direction)
+
+
+@tool
+def browser_resize(width: int, height: int) -> dict:
+    """Resize the controlled window to 320-3840 by 200-2160 pixels and return its actual rectangle. Does not change zoom; invalidates references."""
+    return browser.resize(width, height)
+
+
+@tool
+def browser_status() -> dict:
+    """Read session reachability, handles, current window URL/title. Does not start, restart, switch frames, accept dialogs, or repeat actions. An unreachable result does not prove the browser process exited."""
+    return browser.status()
 
 
 @tool
