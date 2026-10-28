@@ -41,6 +41,34 @@ def check_interactions(browser):
     print('PASS: double/right click, hover, key, AJAX readiness and scrolling', flush=True)
 
 
+def check_exploration(browser):
+    page = browser.snapshot()
+    assert page['total_controls'] > 200 and page['next_offset'] == 200
+    assert page['next_text_offset'] == 12000
+    more = browser.snapshot(offset=200, text_offset=12000)
+    assert more['controls'] and more['text'] and more['next_offset'] is None
+    assert set(c['id'] for c in more['controls']).isdisjoint(c['id'] for c in page['controls'])
+    region = browser.find('exploreRegion', by='id')['matches'][0]['ref']
+    page = browser.snapshot(root_ref=region, limit=5, text_limit=100)
+    assert page['total_controls'] == 221 and page['next_offset'] == 5 and page['next_text_offset'] == 100
+    assert page['text'] == ('Page text. ' * 20)[:100]
+    assert [c['id'] for c in page['controls']] == ['exploreButton' + str(i) for i in range(5)]
+    more = browser.snapshot(root_ref=page['scope_ref'], offset=5, limit=5, text_offset=100, text_limit=100)
+    assert more['text'] == ('Page text. ' * 20)[100:200]
+    assert [c['id'] for c in more['controls']] == ['exploreButton' + str(i) for i in range(5, 10)]
+    found = browser.find('Explore item 219')
+    assert len(found['matches']) == 1 and found['matches'][0]['id'] == 'exploreButton219'
+    png = browser.screenshot(found['matches'][0]['ref'])
+    assert png.startswith(b'\x89PNG')
+    target = browser.find('exploreField', by='id')['matches'][0]['ref']
+    browser.act('fill', target, 'Found via search', fill_mode='dom')
+    target = browser.find('exploreField', by='id')['matches'][0]['ref']
+    assert browser.snapshot(include_values=True, root_ref=target)['controls'][0]['value'] == 'Found via search'
+    assert browser.find('Found via search')['total'] == 0  # no input values searched
+    browser.scroll('top')
+    print('PASS: paged controls/text, region scope renewal, search refs and element screenshot', flush=True)
+
+
 def main():
     faulthandler.dump_traceback_later(60, repeat=True)
     handler = partial(SimpleHTTPRequestHandler, directory=str(Path(__file__).parent / "fixtures"))
@@ -109,6 +137,7 @@ def main():
         assert resized['window']['width'] > 0
         assert browser.wait_ready()['documents'] == 2
         check_interactions(browser)
+        check_exploration(browser)
         browser.navigate(f"http://127.0.0.1:{server.server_port}/child.html")
         assert 'Interaction fixture' in browser.history('back')['text']
         assert 'Frame content ready' in browser.history('forward')['text']
@@ -142,6 +171,7 @@ def main():
         browser.act('click', ref(snapshot, 'legacySuggestion'), click_mode='dom')
         assert 'Suggestion selected' in browser.wait_text('Suggestion selected')['text']
         check_interactions(browser)
+        check_exploration(browser)
         snapshot = browser.open_page(f"http://127.0.0.1:{server.server_port}/child.html")
         assert 'Frame content ready' in snapshot['text']
         assert 'ie_mode_mcp_fixture=opener' in browser.driver.execute_script('return document.cookie')

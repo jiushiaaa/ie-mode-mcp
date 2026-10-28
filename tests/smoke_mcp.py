@@ -12,7 +12,7 @@ async def main():
         async with ClientSession(read, write) as session:
             await session.initialize()
             result = await session.list_tools()
-            assert len(result.tools) == 28, [t.name for t in result.tools]
+            assert len(result.tools) == 32, [t.name for t in result.tools]
             assert 'browser_choose_file' in [t.name for t in result.tools]
             schema = next(t.inputSchema for t in result.tools if t.name == 'browser_click')
             assert schema['properties']['action']['default'] == 'click'
@@ -25,7 +25,11 @@ async def main():
             assert not result.isError
             result = await session.call_tool("browser_snapshot", {})
             assert result.isError
-            print("PASS: stdio handshake, 28 tools, status, diagnostics and validation errors")
+            result = await session.call_tool('browser_sessions', {})
+            assert not result.isError
+            result = await session.call_tool('browser_find', {'query': 'test'})
+            assert result.isError
+            print("PASS: stdio handshake, 32 tools, session registry, diagnostics and validation errors")
 
 
 asyncio.run(main())

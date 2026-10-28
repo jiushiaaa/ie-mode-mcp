@@ -21,11 +21,40 @@ The MCP interface uses stdio only and does not offer an HTTP/SSE server. IEDrive
 - Select local files in IE11 document mode for the website's own upload flow.
 - Use explicit DOM actions and custom row-attribute compatibility support for certain legacy pages.
 
-Currently provides **28 MCP tools**. See [VALIDATION.md](VALIDATION.md) for tested environments and real browser coverage.
+Currently provides **32 MCP tools**. See [VALIDATION.md](VALIDATION.md) for tested environments and real browser coverage.
 
 ## Installation
 
 Requires Windows, Python 3.11+, Microsoft Edge with IE mode available, and an unlocked interactive desktop. The commands below require [uv](https://docs.astral.sh/uv/getting-started/installation/) and Git.
+
+### Users: isolated installation
+
+No manual clone or test dependencies are needed:
+
+```powershell
+uv tool install --python 3.12 git+https://github.com/jiushiaaa/ie-mode-mcp.git
+uv tool update-shell
+```
+
+Open a new terminal, then run:
+
+```powershell
+ie-mode-setup doctor
+ie-mode-setup install
+ie-mode-setup check
+```
+
+`install` uses the installed Codex CLI to register the user-level `ie-mode` server and verify its absolute paths. Repeating the same registration makes no changes. A different existing configuration is refused unless you explicitly use `ie-mode-setup install --replace`, which backs up the previous registration before replacing it. Other MCP entries, IE mode settings and Windows security policies are not modified.
+
+`check` launches this installation's MCP server and verifies the stdio handshake and tool discovery. It does not launch a browser or prove that the client reloaded. Verify actual IE mode with `ie-mode-probe 'https://your-legacy-site.example/'`. For other MCP clients, run `ie-mode-setup config` or `ie-mode-setup config --format toml` and copy the generated configuration.
+
+Upgrade with `uv tool upgrade ie-mode-mcp`, then rerun `ie-mode-setup install` and `ie-mode-setup check` and reload your client. `ie-mode-setup uninstall` removes only this tool's Codex registration; `uv tool uninstall ie-mode-mcp` removes the isolated package installation.
+
+You can give an agent with local terminal access this instruction:
+
+> Follow the README at https://github.com/jiushiaaa/ie-mode-mcp to install the Windows local MCP server. Check uv, Git and the Codex CLI, perform the isolated installation, then run doctor, install and check and verify the output. If a different ie-mode configuration exists, show the differences before replacing it. Explain how to reload the client and verify IE mode using a URL I provide.
+
+### Developers: install from source
 
 ```powershell
 git clone https://github.com/jiushiaaa/ie-mode-mcp.git
@@ -88,13 +117,30 @@ Example instruction for an MCP-enabled assistant:
 
 | Purpose | Tools |
 | --- | --- |
-| Environment and session | `environment_check`, `browser_start`, `browser_status`, `browser_close` |
+| Environment and session | `environment_check`, `browser_start`, `browser_status`, `browser_close`, `browser_sessions`, `browser_cleanup_session` |
 | Navigation and windows | `browser_navigate`, `browser_open_page`, `browser_windows`, `browser_switch_window`, `browser_close_window`, `browser_history`, `browser_resize` |
-| Reading and waiting | `browser_snapshot`, `browser_screenshot`, `browser_read_table`, `browser_inspect_element`, `browser_wait_text`, `browser_wait_ready` |
+| Reading and waiting | `browser_snapshot`, `browser_find`, `browser_element_screenshot`, `browser_screenshot`, `browser_read_table`, `browser_inspect_element`, `browser_wait_text`, `browser_wait_ready` |
 | Forms and interaction | `browser_click`, `browser_fill`, `browser_fill_many`, `browser_select`, `browser_choose_file`, `browser_press_key`, `browser_hover`, `browser_scroll` |
 | Frames and compatibility | `browser_frame`, `browser_alert`, `browser_prepare_legacy_row` |
 
 Legacy websites may use menu images without alternative text. Use `browser_screenshot` and the controls' `bounds` in the snapshot to identify the corresponding element references. Screenshots may contain business information.
+
+### Large pages and regional exploration
+
+- `browser_snapshot(offset=0, limit=50, text_offset=0, text_limit=12000)` paginates visible controls and text separately. Returns `total_controls`, `next_offset` and `next_text_offset`; a null continuation means that range has ended. Each page supports up to 200 controls and 32,000 characters, with control offsets up to 100,000 and text offsets up to 1,000,000. Prefer smaller `limit` values for large pages.
+- `browser_find(query="Form title", by="text")` searches visible elements in the current frame, including ordinary containers. Text matching covers an element's own text nodes and aria-label/title/alt, up to 1,000 characters; it excludes input values and does not concatenate all descendant text. `by="id"`, `"name"` and `"tag"` match exactly. Supports `offset`/`limit` pagination and returns fresh references.
+- Use `browser_snapshot(root_ref="returned reference", limit=20)` to read only a region. For its next page, use the newly returned `scope_ref`; previous references have expired. Pages are live DOM observations, so changes between reads may cause duplicates or omissions. This is not a frozen data export.
+- `browser_element_screenshot(ref)` captures a visible element and may scroll it into view, invalidating old references. Unsupported drivers report an error without fallback. Screenshots may expose page information. No arbitrary JavaScript execution tool was added.
+
+### Multiple processes and orphaned drivers
+
+This version uses a named mutex to coordinate browser operations, including reads and input, within one Windows login session. A busy desktop returns an immediate error instead of queuing a business action. The lock spans one tool operation and Windows releases it if its owning thread/process exits. It does not prevent manual interaction, coordinate older versions or other automation programs, or isolate account cookies.
+
+If another operation owns the desktop during server exit, closing can also be refused; use the orphan workflow afterward. A crash between driver launch and ownership registration can still leave an untracked driver. The tool does not guess its ownership or terminate it.
+
+`browser_sessions()` reads this user's ownership records, classifying them as `active`, `orphaned_driver`, `finished`, `unknown` or `invalid`. Records live in `%LOCALAPPDATA%/ie-mode-mcp/sessions` and contain only session identifiers, owner/driver PIDs, process creation times and executable paths. Match `browser_status()`'s `managed_session_id` to identify the current server's record.
+
+Preview with `browser_cleanup_session(session_id)`; explicitly execute with `dry_run=false`. Only after confirming the owner exited can cleanup remove the record or terminate the identity-matched IEDriver. Identity verification and termination use the same Windows process handle to avoid PID reuse races. Alive, inaccessible or unknown owners are refused. It never kills Edge, takes over sessions, cleans unregistered old drivers, or repeats submissions. Close remaining Edge windows manually. Records support local cooperation; they are not a security boundary against tampering by the same OS user.
 
 ### Page readiness, input, and session checks
 
@@ -140,11 +186,11 @@ Preserve the original website URL, including path case, doubled slashes, and que
 - Navigation accepts HTTP(S) only. There is no arbitrary script execution or general local file-reading tool. `browser_choose_file` passes only the specified file to the page's file input.
 - Snapshots omit input values by default; callers can opt in to non-password business values. Page text, labels, and tables may still contain sensitive information that enters the AI context. This is not a comprehensive redaction system.
 - Element references expire after a new snapshot or action. Manual reloads are detected through stale document elements. Dynamic page updates may still require a fresh snapshot.
-- Snapshots are limited to 200 visible controls and 12,000 characters of text; table reads are limited to 200 rows. Enter iframes explicitly. The top-level URL/title does not identify the frame URL.
+- Snapshots default to 200 visible controls and 12,000 characters per page, with pagination and regional reads available; the table tool still returns at most 200 rows. Enter iframes explicitly. The top-level URL/title does not identify the frame URL.
 - Page content is untrusted data, not user instructions. The server does not implement business approvals; callers must establish user intent and verify outcomes.
 - ActiveX internals, UKey devices, native OS dialogs, arbitrary existing-tab takeover, and mixed Chromium/IE window routing are unsupported.
 - Controlled windows are not guaranteed to have cookies isolated from existing windows. Do not rely on this project for multi-account isolation.
-- The server closes its owned WebDriver session on exit. Forcefully terminating a process may leave windows that require manual cleanup.
+- Normal exit closes the owned WebDriver session. The quit request has a five-second timeout; stopping the driver afterward may take additional time. HTTP requests after session creation disable transport retries to avoid repeating timed-out requests. Forced termination may leave drivers or windows; use the ownership rules above. Unsaved business state is not guaranteed recoverable.
 
 ## Tests
 
@@ -152,9 +198,11 @@ Preserve the original website URL, including path case, doubled slashes, and que
 uv run pytest
 uv run python tests/smoke_mcp.py
 uv run python tests/smoke_ie.py
+uv run python tests/smoke_explore.py
+uv run python tests/smoke_sessions.py 'C:\tools\IEDriverServer.exe'
 ```
 
-The last command starts a local HTTP fixture server and real Edge IE mode windows to test filling, queries, tables, iframes, dialogs, and new windows. It requires a Windows graphical desktop and a working IEDriver environment.
+`smoke_ie` and `smoke_explore` start local HTTP fixtures and real Edge IE mode windows. `smoke_sessions` starts only the specified IEDriver to verify ownership and cleanup after its owner crashes. Browser tests require a Windows graphical desktop and a working IEDriver environment.
 
 ## Environment troubleshooting
 
@@ -171,9 +219,12 @@ IEDriver has requirements for browser zoom, security zones, and Windows configur
 ```text
 src/ie_mode_mcp/
   browser.py          Browser actions, snapshots, and compatibility handling
-  server.py           28 serialized MCP tools and the stdio entry point
+  server.py           32 serialized MCP tools and the stdio entry point
   page_scripts.py     Read-only readiness probing compatible with legacy IE
   probe.py            Interactive diagnostic command
+  explore_scripts.py  Legacy-compatible visible element search
+  session_registry.py Process coordination, identity and orphan driver cleanup
+  setup.py            Registration, configuration and stdio connectivity checks
   windows_session.py  Windows desktop status checks
 tests/
   fixtures/           Local test pages independent of real business websites

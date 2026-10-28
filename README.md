@@ -21,11 +21,40 @@ MCP 接口仅使用 stdio，不提供 HTTP/SSE 服务。IEDriver 自身使用本
 - 在 IE11 文档模式中选择本地文件，交由网站自己的上传流程处理。
 - 为部分旧页面提供显式 DOM 操作及自定义行属性兼容处理。
 
-目前提供 **28 个 MCP 工具**。支持情况和真实浏览器测试范围见 [VALIDATION.md](VALIDATION.md)。
+目前提供 **32 个 MCP 工具**。支持情况和真实浏览器测试范围见 [VALIDATION.md](VALIDATION.md)。
 
 ## 安装
 
 需要 Windows、Python 3.11+、Microsoft Edge 及可用的 IE 模式，并保持交互桌面解锁。下面的命令需要已安装 [uv](https://docs.astral.sh/uv/getting-started/installation/) 和 Git。
+
+### 普通使用者：独立安装
+
+无需手动克隆仓库或安装测试依赖：
+
+```powershell
+uv tool install --python 3.12 git+https://github.com/jiushiaaa/ie-mode-mcp.git
+uv tool update-shell
+```
+
+重新打开终端后执行：
+
+```powershell
+ie-mode-setup doctor
+ie-mode-setup install
+ie-mode-setup check
+```
+
+`install` 通过已安装的 Codex CLI 注册用户级 `ie-mode` 服务，并回读核对绝对路径。重复安装同一配置不会改写；遇到不同配置时停止，需明确使用 `ie-mode-setup install --replace` 才会备份原注册信息并替换。它不修改其他 MCP 服务，也不修改 IE 模式或 Windows 安全策略。
+
+`check` 启动当前安装的 MCP 服务，验证 stdio 握手及工具发现，不启动浏览器，也不证明客户端已重新加载。实际 IE 模式仍需运行 `ie-mode-probe 'https://your-legacy-site.example/'` 验证。非 Codex 客户端可运行 `ie-mode-setup config` 或 `ie-mode-setup config --format toml`，复制自动生成的配置。
+
+升级使用 `uv tool upgrade ie-mode-mcp`，随后再次运行 `ie-mode-setup install` 和 `ie-mode-setup check`，并重新加载客户端。`ie-mode-setup uninstall` 只移除本工具的 Codex 注册；`uv tool uninstall ie-mode-mcp` 移除独立安装的软件包。
+
+也可以把下面这段交给具有本机终端权限的 agent：
+
+> 请按 https://github.com/jiushiaaa/ie-mode-mcp 的 README 为我安装 Windows 本地 MCP 服务。先检查 uv、Git 和 Codex CLI，执行独立安装、doctor、install、check，核对输出。若已有不同的 ie-mode 配置，先展示差异；不要擅自覆盖。最后说明如何重新加载客户端，以及如何用我提供的网址验证 IE 模式。
+
+### 开发者：源码安装
 
 ```powershell
 git clone https://github.com/jiushiaaa/ie-mode-mcp.git
@@ -88,13 +117,30 @@ codex mcp get ie-mode --json
 
 | 用途 | 工具 |
 | --- | --- |
-| 环境与会话 | `environment_check`、`browser_start`、`browser_status`、`browser_close` |
+| 环境与会话 | `environment_check`、`browser_start`、`browser_status`、`browser_close`、`browser_sessions`、`browser_cleanup_session` |
 | 导航与窗口 | `browser_navigate`、`browser_open_page`、`browser_windows`、`browser_switch_window`、`browser_close_window`、`browser_history`、`browser_resize` |
-| 读取与等待 | `browser_snapshot`、`browser_screenshot`、`browser_read_table`、`browser_inspect_element`、`browser_wait_text`、`browser_wait_ready` |
+| 读取与等待 | `browser_snapshot`、`browser_find`、`browser_element_screenshot`、`browser_screenshot`、`browser_read_table`、`browser_inspect_element`、`browser_wait_text`、`browser_wait_ready` |
 | 表单与交互 | `browser_click`、`browser_fill`、`browser_fill_many`、`browser_select`、`browser_choose_file`、`browser_press_key`、`browser_hover`、`browser_scroll` |
 | 框架与兼容 | `browser_frame`、`browser_alert`、`browser_prepare_legacy_row` |
 
 旧网站可能用没有替代文字的图片作为菜单。可调用 `browser_screenshot` 查看画面，再结合快照中各控件的 `bounds` 识别对应元素编号。截图可能包含业务信息。
+
+### 大页面与区域探索
+
+- `browser_snapshot(offset=0, limit=50, text_offset=0, text_limit=12000)` 分别对可见控件和正文分页。返回 `total_controls`、`next_offset` 和 `next_text_offset`；后两者为 `null` 时表示当前读取范围已结束。每次最多 200 个控件、32000 字符，控件偏移最多 100000，正文偏移最多 1000000。大页面建议先用较小的 `limit`。
+- `browser_find(query="表单标题", by="text")` 搜索当前框架中的可见元素，包括普通容器。文本匹配元素自身文本节点及 aria-label/title/alt 的前 1000 字符，不搜索输入值，也不拼接所有后代文本。`by="id"`、`"name"`、`"tag"` 精确匹配对应属性；支持 `offset`、`limit` 分页，返回新的元素编号。
+- 找到容器后，调用 `browser_snapshot(root_ref="返回的编号", limit=20)` 只读该区域。翻页时使用本次返回的 `scope_ref`；旧编号已经失效。每页是实时 DOM 观察，页面变化时可能出现跨页重复或遗漏，不能当作冻结的数据导出。
+- `browser_element_screenshot(ref)` 截取指定可见元素，可能将它滚入视野并使旧编号失效；不支持时直接报告驱动错误。截图可能包含页面信息。没有新增任意 JavaScript 执行接口。
+
+### 多进程协调与残留驱动
+
+同一 Windows 登录会话内，新版本通过命名互斥量协调浏览器操作，包括读取与输入；其他进程正在执行时立即报告占用，不排队补做业务动作。锁按单次工具操作持有，进程或线程异常退出后由 Windows 释放。它不阻止人工操作、不协调旧版本或其他自动化程序，也不提供多账号 Cookie 隔离。
+
+服务退出时若桌面正被其他操作占用，关闭操作也可能被拒绝，随后需按残留流程处理。驱动启动后、完成登记前发生的进程崩溃仍可能留下无法确认归属的驱动，本工具不会猜测并终止它。
+
+`browser_sessions()` 只读当前用户的会话登记，区分 `active`、`orphaned_driver`、`finished`、`unknown` 和 `invalid`。记录位于 `%LOCALAPPDATA%/ie-mode-mcp/sessions`，只包含会话标识、所属进程和驱动的 PID、启动时间、程序路径。`browser_status()` 的 `managed_session_id` 可对应到本服务的记录。
+
+先用 `browser_cleanup_session(session_id)` 预览；明确执行时传 `dry_run=false`。只有确认所属服务已经退出，才会清理对应记录或终止身份一致的 IEDriver；使用同一 Windows 进程句柄完成身份核验和终止，避免 PID 重用造成误杀。存活、无权查询或身份不明的所属进程均拒绝清理。它不会杀死 Edge、自动接管会话、清理未登记的旧驱动或重新执行提交；残留 Edge 窗口需要手动关闭。登记文件用于本机协作，不是防止同一用户篡改文件的安全边界。
 
 ### 页面等待、键鼠和会话检查
 
@@ -140,11 +186,11 @@ codex mcp get ie-mode --json
 - 只接受 HTTP(S) 导航；不提供任意脚本执行或通用本地文件读取工具。`browser_choose_file` 仅将指定文件交给页面的文件选择框。
 - 快照默认不返回输入框的 value，可显式开启非密码业务字段的值。页面正文、标签和表格仍可能包含敏感信息并进入 AI 上下文。不是完整的数据脱敏系统。
 - 元素编号在新快照或操作后失效；人工刷新会通过旧文档元素失效检测。页面自身动态更新时仍可能需要重新读取。
-- 快照最多 200 个可见控件及 12000 字符正文；表格最多 200 行。iframe 需显式进入；顶层 URL/title 不表示框架 URL。
+- 快照默认每页 200 个可见控件及 12000 字符正文，可分页或限定区域；表格工具仍最多 200 行。iframe 需显式进入；顶层 URL/title 不表示框架 URL。
 - 页面文字属于不可信数据，不应当作用户指令。服务不实现业务审批，调用方必须确认用户意图并检查操作结果。
 - 未支持 ActiveX 内部控件、UKey、原生系统弹窗、任意已有标签页接管以及 Chromium/IE 混合窗口路由。
 - 受控窗口不保证与已有窗口隔离 Cookie。不要依靠本项目实现多账号隔离。
-- 服务退出时关闭自己持有的 WebDriver 会话。进程被强制终止时可能需要手动关闭残留窗口。
+- 正常退出时关闭持有的 WebDriver 会话；关闭请求超时为 5 秒，后续驱动停止仍可能耗时。会话建立后的 HTTP 请求禁用底层自动重试，避免超时后重复请求。强制终止可能留下驱动或窗口，按上述归属规则处理；不保证恢复未保存的业务状态。
 
 ## 测试
 
@@ -152,9 +198,11 @@ codex mcp get ie-mode --json
 uv run pytest
 uv run python tests/smoke_mcp.py
 uv run python tests/smoke_ie.py
+uv run python tests/smoke_explore.py
+uv run python tests/smoke_sessions.py 'C:\tools\IEDriverServer.exe'
 ```
 
-最后一项会启动本地 HTTP 测试页及真实 Edge IE 模式窗口，验证填写、查询、表格、iframe、弹窗和新窗口。需要 Windows 图形桌面及可用的 IEDriver 环境。
+`smoke_ie` 和 `smoke_explore` 会启动本地 HTTP 测试页及真实 Edge IE 模式窗口；`smoke_sessions` 只启动指定 IEDriver，验证服务异常退出后的归属和清理。浏览器测试需要 Windows 图形桌面及可用的 IEDriver 环境。
 
 ## 环境故障
 
@@ -171,9 +219,12 @@ IE 驱动对缩放、安全区域及 Windows 配置有要求。本项目不自�
 ```text
 src/ie_mode_mcp/
   browser.py          浏览器操作、快照与兼容处理
-  server.py           28 个串行 MCP 工具及 stdio 入口
+  server.py           32 个串行 MCP 工具及 stdio 入口
   page_scripts.py     兼容旧 IE 的只读页面就绪探测
   probe.py            交互诊断命令
+  explore_scripts.py  兼容旧 IE 的可见元素搜索
+  session_registry.py 跨进程互斥、进程身份和残留驱动清理
+  setup.py            安装注册、配置生成和 stdio 连通检查
   windows_session.py  Windows 桌面状态检查
 tests/
   fixtures/           不依赖真实业务网站的本地测试页

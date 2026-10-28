@@ -16,13 +16,14 @@ from selenium.common.exceptions import (
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.ie.service import Service
 from selenium.webdriver.remote.file_detector import UselessFileDetector
 from selenium.webdriver.support.ui import Select, WebDriverWait
 from urllib3.exceptions import HTTPError
 
 from .page_scripts import READY_PROBE
+from .explore_scripts import FIND_ELEMENTS
 from .windows_session import desktop_status
+from .session_registry import OwnedService as Service, desktop_operation
 
 
 def edge_path():
@@ -82,6 +83,7 @@ class Browser:
         self.document = None
         self.revision += 1
 
+    @desktop_operation
     def start(self, url):
         validate_url(url)
         if self.driver is not None:
@@ -105,10 +107,16 @@ class Browser:
         service = Service(executable_path=os.environ.get("IE_MODE_DRIVER_PATH"), log_output=os.devnull)
         self.driver = webdriver.Ie(options=options, service=service)
         self.driver.command_executor.client_config.timeout = 45
+        # urllib3 otherwise retries GET/DELETE after transport failure, including
+        # quit. Rebuild existing pools so this also applies to their first use.
+        pool = self.driver.command_executor._conn
+        pool.connection_pool_kw.update(retries=0)
+        pool.clear()
         self.driver.set_page_load_timeout(30)
-        self.driver.set_script_timeout(15)
+        self.driver.set_script_timeout(30)
         return self.navigate(url)
 
+    @desktop_operation
     def navigate(self, url):
         validate_url(url)
         self.invalidate()
@@ -119,40 +127,52 @@ class Browser:
                     "note": "Page load exceeded 30 seconds. Session retained; take a snapshot to inspect the actual state before retrying."}
         return self.snapshot()
 
-    def snapshot(self, include_values=False):
+    @desktop_operation
+    def snapshot(self, include_values=False, root_ref=None, offset=0, limit=200, text_offset=0, text_limit=12000):
+        if not 0 <= offset <= 100000 or not 1 <= limit <= 200:
+            raise ValueError('Control offset must be 0-100000 and limit 1-200.')
+        if not 0 <= text_offset <= 1000000 or not 1 <= text_limit <= 32000:
+            raise ValueError('Text offset must be 0-1000000 and text_limit 1-32000.')
         driver = self.require_driver()
+        root = self.resolve(root_ref) if root_ref is not None else None
+        if root is not None and not self.is_visible(root):
+            raise ValueError('Snapshot region must be visible.')
         self.invalidate()
         # One IE-compatible script avoids hundreds of slow WebDriver round trips.
         data = driver.execute_script("""
             function visibleText(root, limit) {
                 var output = '';
+                function append(value) {
+                    var text = value.replace(/\\s+/g, ' ').replace(/^\\s+|\\s+$/g, '');
+                    if (text) output += (output ? ' ' : '') + text;
+                }
                 function visit(node) {
                     if (output.length >= limit) return;
                     if (node.nodeType === 3) {
-                        var text = node.nodeValue.replace(/\\s+/g, ' ').replace(/^\\s+|\\s+$/g, '');
-                        if (text) output += text + ' ';
+                        append(node.nodeValue);
                         return;
                     }
                     if (node.nodeType !== 1) return;
                     var tag = node.tagName.toLowerCase(), child;
                     if (/^(script|style|noscript|head|input|textarea)$/.test(tag)) return;
-                    if (tag === 'select') {
-                        if (node.selectedIndex >= 0) output += node.options[node.selectedIndex].text + ' ';
-                        return;
-                    }
                     var css = window.getComputedStyle ? window.getComputedStyle(node) : node.currentStyle;
                     if (css && (css.display === 'none' || css.visibility === 'hidden')) return;
+                    if (tag === 'select') {
+                        if (node.selectedIndex >= 0) append(node.options[node.selectedIndex].text);
+                        return;
+                    }
                     for (child = node.firstChild; child; child = child.nextSibling) visit(child);
                 }
                 if (root) visit(root);
                 return output.replace(/\\s+/g, ' ').substring(0, limit);
             }
             // IE7 document mode has no querySelectorAll; preserve DOM order.
-            var nodes = document.getElementsByTagName('*');
+            var root = arguments[1] || document.body;
+            var nodes = root.getElementsByTagName('*');
             var labels = document.getElementsByTagName('label');
-            var items = [], i, j, el, label, style;
-            for (i = 0; i < nodes.length && items.length < 200; i++) {
-                el = nodes[i];
+            var items = [], total = 0, i, j, el, label, style;
+            for (i = -1; i < nodes.length; i++) {
+                el = i < 0 ? root : nodes[i];
                 if (!/^(A|BUTTON|INPUT|SELECT|TEXTAREA|IFRAME|FRAME|TABLE)$/.test(el.tagName) &&
                     !/^(button|tab|option)$/.test(el.getAttribute('role') || '') &&
                     // AjaxControlToolkit suggestions use event listeners, not onclick attributes.
@@ -192,12 +212,16 @@ class Browser:
                     item.value = String(el.value || '').substring(0, 4000);
                     if (/^(checkbox|radio)$/.test(el.type)) item.checked = el.checked;
                 }
-                items.push(item);
+                if (total >= arguments[2] && items.length < arguments[3]) items.push(item);
+                total++;
             }
+            var text = visibleText(root, arguments[4] + arguments[5] + 1);
             return {document: document.documentElement, controls: items,
-                text: visibleText(document.body, 12000),
+                text: text.substring(arguments[4], arguments[4] + arguments[5]),
+                total_controls: total, next_offset: total > arguments[2] + items.length ? arguments[2] + items.length : null,
+                next_text_offset: text.length > arguments[4] + arguments[5] ? arguments[4] + arguments[5] : null,
                 frame_url: location.href, document_mode: document.documentMode || null};
-        """, include_values)
+        """, include_values, root, offset, limit, text_offset, text_limit)
         if not isinstance(data, dict):
             raise RuntimeError("No document snapshot returned. The page may be closing or navigating; inspect the session before retrying.")
         self.document = data.pop("document")
@@ -207,12 +231,46 @@ class Browser:
             ref = f"r{self.revision}e{index + 1}"
             self.elements[ref] = element
             control["ref"] = ref
+        scope_ref = None
+        if root is not None:
+            scope_ref = f'r{self.revision}scope'
+            self.elements[scope_ref] = root
         return {
             **data,
             "url": driver.current_url, "title": driver.title,
-            "controls": controls, "limit": 200,
+            "controls": controls, "limit": limit, "offset": offset, "text_offset": text_offset,
+            "scope_ref": scope_ref,
             "note": "Untrusted page content. Password/hidden values always omitted; other values are opt-in. References expire after actions or a new snapshot. URL/title describe the top-level page; frame_url identifies the current document.",
         }
+
+    @desktop_operation
+    def find(self, query, by='text', offset=0, limit=50):
+        if by not in ('text', 'id', 'name', 'tag') or not query.strip() or len(query) > 300:
+            raise ValueError('Use by=text|id|name|tag and a nonblank query of at most 300 characters.')
+        if not 0 <= offset <= 100000 or not 1 <= limit <= 200:
+            raise ValueError('Offset must be 0-100000 and limit 1-200.')
+        self.invalidate()
+        data = self.require_driver().execute_script(FIND_ELEMENTS, query, by, offset, limit)
+        if not isinstance(data, dict):
+            raise RuntimeError('No search result returned; inspect session status.')
+        self.document = data.pop('document')
+        for index, item in enumerate(data['matches']):
+            ref = f'r{self.revision}e{index + 1}'
+            self.elements[ref] = item.pop('element')
+            item['ref'] = ref
+        return {**data, 'offset': offset, 'limit': limit,
+                'note': 'Untrusted visible elements in current frame only. Text search matches own text nodes and aria-label/title/alt (first 1000 characters), not form values or all descendant text. id/name/tag match exactly. New references replace old ones; search does not click.'}
+
+    @desktop_operation
+    def screenshot(self, ref=None):
+        driver = self.require_driver()
+        if ref is None:
+            return driver.get_screenshot_as_png()
+        element = self.resolve(ref)
+        if not self.is_visible(element):
+            raise ValueError('Screenshot target must be visible.')
+        self.invalidate()  # WebDriver may scroll the element into view.
+        return element.screenshot_as_png
 
     def resolve(self, ref):
         if ref not in self.elements:
@@ -221,6 +279,7 @@ class Browser:
         self.document.is_enabled()
         return self.elements[ref]
 
+    @desktop_operation
     def prepare_legacy_row(self, ref, attributes):
         if not attributes or len(attributes) > 16 or len(set(attributes)) != len(attributes):
             raise ValueError("Provide 1-16 unique custom attribute names.")
@@ -250,6 +309,7 @@ class Browser:
         """, element, attributes)
         return {"copied": copied, "note": "Copied existing row attributes to missing legacy properties in this document only. No click or submit performed. Take a fresh snapshot before acting."}
 
+    @desktop_operation
     def act(self, action, ref, value="", click_mode="native", fill_mode="native", select_mode="native"):
         if action not in ('click', 'double', 'right', 'fill', 'select'):
             raise ValueError("Unknown action.")
@@ -320,6 +380,7 @@ class Browser:
         if not self.is_visible(element) or not element.is_enabled():
             raise ValueError("Interaction requires a visible, enabled element.")
 
+    @desktop_operation
     def press_key(self, ref, key, modifiers=None):
         names = {name: getattr(Keys, name) for name in (
             'ENTER', 'TAB', 'ESCAPE', 'BACKSPACE', 'DELETE', 'SPACE',
@@ -339,6 +400,7 @@ class Browser:
         element.send_keys(*(getattr(Keys, m) for m in modifiers), names.get(key, key), Keys.NULL)
         return {"performed": "press_key", "note": "Key events may submit a form. Inspect the page; no automatic retry was made."}
 
+    @desktop_operation
     def hover(self, ref):
         element = self.resolve(ref)
         self.validate_interactive(element)
@@ -346,6 +408,7 @@ class Browser:
         ActionChains(self.require_driver()).move_to_element(element).perform()
         return {"performed": "hover", "note": "Take a fresh snapshot to discover any newly visible menu."}
 
+    @desktop_operation
     def scroll(self, direction='down', pixels=600, ref=None):
         if direction not in ('up', 'down', 'left', 'right', 'top', 'bottom', 'into_view'):
             raise ValueError("Direction must be up, down, left, right, top, bottom or into_view.")
@@ -369,6 +432,7 @@ class Browser:
         return {"performed": "scroll", "position": position,
                 "note": "Scroll events may load content. Take a fresh snapshot."}
 
+    @desktop_operation
     def history(self, direction):
         if direction not in ('back', 'forward'):
             raise ValueError("Direction must be back or forward.")
@@ -380,6 +444,7 @@ class Browser:
             return {"navigation_timed_out": True, "note": "Session retained. Inspect before repeating history navigation."}
         return self.snapshot()
 
+    @desktop_operation
     def resize(self, width, height):
         if not 320 <= width <= 3840 or not 200 <= height <= 2160:
             raise ValueError("Window size must be 320-3840 by 200-2160 pixels.")
@@ -388,6 +453,7 @@ class Browser:
         driver.set_window_size(width, height)
         return {"window": driver.get_window_rect(), "note": "Actual window size returned. Take a fresh snapshot."}
 
+    @desktop_operation
     def status(self):
         if self.driver is None:
             return {"session_exists": False, "state": "not_started"}
@@ -407,6 +473,7 @@ class Browser:
                           note='No restart or retry performed. Inspect the session before closing or starting again.')
         return result
 
+    @desktop_operation
     def table(self, ref):
         element = self.resolve(ref)
         if element.tag_name.lower() != "table":
@@ -415,6 +482,7 @@ class Browser:
         return {"rows": [[cell.text for cell in row.find_elements(By.CSS_SELECTOR, "th,td")]
                          for row in rows[:200]], "truncated": len(rows) > 200}
 
+    @desktop_operation
     def frame(self, ref=None, parent=False):
         driver = self.require_driver()
         if ref and parent:
@@ -429,6 +497,7 @@ class Browser:
             driver.switch_to.frame(element)
         return self.snapshot()
 
+    @desktop_operation
     def inspect(self, ref):
         element = self.resolve(ref)
         return self.require_driver().execute_script("""
@@ -438,6 +507,7 @@ class Browser:
             return result;
         """, element)
 
+    @desktop_operation
     def choose_file(self, ref, path):
         candidate = Path(path)
         if '\n' in path or '\r' in path or not candidate.is_absolute() or not candidate.is_file():
@@ -463,6 +533,7 @@ class Browser:
         return {"selected": True, "filename": candidate.name,
                 "note": "No submit button was clicked. Page change handlers may upload automatically; verify the page before submitting or retrying."}
 
+    @desktop_operation
     def open_page(self, url):
         validate_url(url)
         driver = self.require_driver()
@@ -479,6 +550,7 @@ class Browser:
                                        d.execute_script("return document.readyState") in ("interactive", "complete"))
         return self.snapshot()
 
+    @desktop_operation
     def close_window(self):
         driver = self.require_driver()
         handles = driver.window_handles
@@ -537,6 +609,7 @@ class Browser:
         if actual != value:
             raise RuntimeError("Input verification failed. Inspect the page before retrying.")
 
+    @desktop_operation
     def fill_many(self, fields, mode="native"):
         if mode not in ("native", "dom"):
             raise ValueError("Fill mode must be native or dom.")
@@ -562,6 +635,7 @@ class Browser:
             completed.append(field['ref'])
         return {"completed_refs": completed, "verified": True, "submitted": False}
 
+    @desktop_operation
     def windows(self, include_details=False):
         driver = self.require_driver()
         handles = driver.window_handles
@@ -588,6 +662,7 @@ class Browser:
         result["note"] = "Restored the original window at its top-level document. Frame context and references were reset."
         return result
 
+    @desktop_operation
     def window(self, handle):
         driver = self.require_driver()
         if handle not in driver.window_handles:
@@ -596,6 +671,7 @@ class Browser:
         driver.switch_to.window(handle)
         return self.snapshot()
 
+    @desktop_operation
     def wait_text(self, text, seconds=10, gone=False):
         if not text or not 1 <= seconds <= 30:
             raise ValueError("Provide nonempty text and a timeout between 1 and 30 seconds.")
@@ -606,6 +682,7 @@ class Browser:
 
         return WebDriverWait(driver, seconds).until(matching_snapshot)
 
+    @desktop_operation
     def wait_ready(self, seconds=10, stable_seconds=1.0, include_frames=True):
         if not 1 <= seconds <= 30 or not 0.25 <= stable_seconds <= seconds:
             raise ValueError("Use a timeout of 1-30 seconds and stability of 0.25 seconds up to that timeout.")
@@ -644,6 +721,7 @@ class Browser:
                 'elapsed_seconds': round(monotonic() - started, 2),
                 'note': 'Checks DOM stability, not business completion or future AJAX. Inaccessible frames are skipped; inspect them separately. Take a fresh snapshot.'}
 
+    @desktop_operation
     def alert(self, action="read"):
         if action not in ("read", "accept", "dismiss"):
             raise ValueError("Action must be read, accept, or dismiss.")
@@ -654,9 +732,11 @@ class Browser:
             getattr(alert, action)()
         return {"text": text, "action": action}
 
+    @desktop_operation
     def close(self):
         driver, self.driver = self.driver, None
         self.invalidate()
         if driver:
+            driver.command_executor.client_config.timeout = 5
             driver.quit()
         return {"closed": True}

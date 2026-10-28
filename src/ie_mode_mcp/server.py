@@ -5,6 +5,7 @@ from typing_extensions import TypedDict
 from mcp.server.fastmcp import FastMCP, Image
 
 from .browser import Browser, doctor
+from .session_registry import list_sessions, cleanup_session
 
 browser = Browser()
 
@@ -49,15 +50,40 @@ def browser_navigate(url: str) -> dict:
 
 
 @tool
-def browser_snapshot(include_values: bool = False) -> dict:
-    """Read visible text and controls. Opt in to business form values; password/hidden fields are always excluded. Invalidates references."""
-    return browser.snapshot(include_values)
+def browser_snapshot(include_values: bool = False, root_ref: str | None = None,
+                     offset: int = 0, limit: int = 200, text_offset: int = 0, text_limit: int = 12000) -> dict:
+    """Read visible text and controls, optionally inside a fresh root_ref. Follow next_offset/next_text_offset for pagination; use returned scope_ref for the next regional page. Password/hidden values excluded. Each read replaces all references. Pages are live, not a frozen dataset."""
+    return browser.snapshot(include_values, root_ref, offset, limit, text_offset, text_limit)
 
 
 @tool
 def browser_screenshot() -> Image:
     """Capture the current page as an image. May contain sensitive page content; use bounds in the snapshot to identify image-only controls."""
-    return Image(data=browser.require_driver().get_screenshot_as_png(), format="png")
+    return Image(data=browser.screenshot(), format="png")
+
+
+@tool
+def browser_find(query: str, by: str = 'text', offset: int = 0, limit: int = 50) -> dict:
+    """Find visible elements in the current frame, including regions absent from the control snapshot. by=id|name|tag is exact; text searches own text and aria-label/title/alt, excluding form values, up to 1000 characters per element. Returns fresh refs and pagination, does not click."""
+    return browser.find(query, by, offset, limit)
+
+
+@tool
+def browser_element_screenshot(ref: str) -> Image:
+    """Capture a visible element using a fresh reference. May scroll and expose page information; invalidates refs. No fallback if the driver does not support element screenshots."""
+    return Image(data=browser.screenshot(ref), format='png')
+
+
+@tool
+def browser_sessions() -> dict:
+    """List process ownership records from this Windows user, without contacting their browsers. Active, orphaned_driver, finished, unknown or invalid. No takeover or automatic cleanup."""
+    return list_sessions()
+
+
+@tool
+def browser_cleanup_session(session_id: str, dry_run: bool = True) -> dict:
+    """Preview cleanup by default. dry_run=false removes a finished record or terminates only its identity-verified IEDriver after confirming the owner exited. Never kills Edge, unknown/live owners or untracked processes. Use an exact session_id from browser_sessions."""
+    return cleanup_session(session_id, dry_run)
 
 
 @tool
@@ -190,7 +216,9 @@ def browser_resize(width: int, height: int) -> dict:
 @tool
 def browser_status() -> dict:
     """Read session reachability, handles, current window URL/title. Does not start, restart, switch frames, accept dialogs, or repeat actions. An unreachable result does not prove the browser process exited."""
-    return browser.status()
+    result = browser.status()
+    result['managed_session_id'] = getattr(getattr(browser.driver, 'service', None), 'session_id', None)
+    return result
 
 
 @tool
