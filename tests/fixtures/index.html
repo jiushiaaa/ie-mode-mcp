@@ -1,0 +1,19 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>IE mode fixture</title></head>
+<body>
+<h1>Legacy test page</h1>
+<p style="display:none">HIDDEN_SENTINEL</p>
+<script>var SCRIPT_SENTINEL = 1; document.cookie='ie_mode_mcp_fixture=opener; path=/';</script>
+<label for="customer">Customer</label><input id="customer" type="text">
+<label for="note">Note</label><input id="note" type="text">
+<label for="attachment">Attachment</label><input id="attachment" type="file">
+<input id="secret" type="password" value="DO_NOT_EXPOSE_PASSWORD">
+<select id="region"><option>Domestic</option><option>Export</option></select>
+<button id="search" onclick="document.getElementById('result').innerText = document.getElementById('customer').value;">Search</button>
+<table id="results"><tr><th>Customer</th></tr><tr><td id="result">No query</td></tr></table>
+<table><tr id="legacyRow" _id="fixture-42" _status="ready" onclick="document.getElementById('rowResult').innerText=String(this._id)+':'+String(this._status);"><td>Legacy row selection</td></tr></table>
+<p id="rowResult">No row selected</p>
+<button id="dialog" onclick="alert('Fixture alert');">Dialog</button>
+<button id="popup" onclick="window.open('child.html');">Open window</button>
+<iframe id="child" src="child.html" title="Child frame"></iframe>
+</body></html>

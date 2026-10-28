@@ -1,0 +1,24 @@
+<!doctype html>
+<html><head><meta http-equiv="X-UA-Compatible" content="IE=7"><meta charset="utf-8"><title>IE7 document fixture</title></head>
+<body>
+<label for="attachment">Attachment</label><input id="attachment" type="file">
+<table><tr><td>Legacy customer</td><td><input id="legacyCustomer" type="text"></td></tr></table>
+<input type="password" value="LEGACY_SECRET">
+<div style="display:none">LEGACY_HIDDEN</div>
+<span id="legacyAction" onclick="document.getElementById('legacyResult').innerText='Legacy saved';">Save</span>
+<p id="legacyResult">Not saved</p>
+<table onclick="document.getElementById('legacyTabResult').innerText='Legacy tab selected';"><tr><td id="legacyTab" tabID="tabs,0">Contract terms</td><td id="plainCell">Ordinary cell</td></tr></table>
+<div onclick="document.getElementById('legacyTabResult').innerText='ARIA tab selected';"><span id="ariaTab" role="tab">Review</span></div>
+<p id="legacyTabResult">No tab selected</p>
+<div id="fixture_completionListElem"><div id="legacySuggestion">Export</div></div>
+<div id="hidden_completionListElem" style="display:none"><div id="hiddenSuggestion">Hidden option</div></div>
+<div id="plainSuggestion">Ordinary text</div>
+<div id="ariaSuggestion" role="option">Import</div>
+<p id="suggestionResult">No suggestion selected</p>
+<script>
+function chooseSuggestion() { document.getElementById('suggestionResult').innerText = 'Suggestion selected'; }
+var suggestion = document.getElementById('legacySuggestion');
+if (suggestion.addEventListener) suggestion.addEventListener('click', chooseSuggestion, false);
+else suggestion.attachEvent('onclick', chooseSuggestion);
+</script>
+</body></html>

@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ie-mode-mcp"
+version = "0.1.0"
+description = "Local MCP tools for Microsoft Edge Internet Explorer mode"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = ["selenium>=4.27,<5", "mcp>=1.26,<2"]
+
+[project.urls]
+Repository = "https://github.com/jiushiaaa/ie-mode-mcp"
+Issues = "https://github.com/jiushiaaa/ie-mode-mcp/issues"
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10"]
+
+[project.scripts]
+ie-mode-mcp = "ie_mode_mcp.server:main"
+ie-mode-probe = "ie_mode_mcp.probe:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
